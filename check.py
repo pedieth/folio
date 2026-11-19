@@ -1,14 +1,14 @@
 import time
 # Regression checks for Folio. Run before every deploy: python3 check.py
 import json,re,subprocess,tempfile,os,sys
-s=open('src/build.js').read()
+s=open('/workspace/work/folio/src/build.js').read()
 i=s.index('const HTML = ');e=s.find('\n',i);e=len(s) if e<0 else e
 html=json.loads(s[i+len('const HTML = '):e].rstrip().rstrip(';'))
 bad=0
 def ok(c,m):
     global bad
     print(('PASS ' if c else 'FAIL ')+m); bad+= (not c)
-r=subprocess.run(['node','--check','src/build.js'],capture_output=True,text=True);ok(r.returncode==0,'build.js syntax '+r.stderr[:200])
+r=subprocess.run(['node','--check','/workspace/work/folio/src/build.js'],capture_output=True,text=True);ok(r.returncode==0,'build.js syntax '+r.stderr[:200])
 for n,(attr,body) in enumerate(re.findall(r'<script([^>]*)>(.*?)</script>',html,re.S)):
     f=tempfile.mktemp(suffix='.mjs' if 'module' in attr else '.js');open(f,'w').write(body)
     r=subprocess.run(['node','--check',f],capture_output=True,text=True);ok(r.returncode==0,f'inline script {n} syntax '+r.stderr[:300]);os.remove(f)
@@ -38,6 +38,8 @@ ok(not re.search(r'<link rel="stylesheet"(?![^>]*media="print")[^>]*fonts.google
 ok('await _T(sdk.actions.ready(),900)' in html,'start: ready() still called')
 ok('pathname === "/js/sdk-040.mjs") return sdkJs' in s and 'js:sdk-040' in s,'start: /js/sdk-040.mjs route')
 ok('if (e && e.nf) return J({ error: "not found" }, 404);' in s,'api: not-found errors map to 404 everywhere')
+ok('data-t="library"' in html and 'window.__freq=()=>show("requests")' in html,'nav: Library tab, Requests under Writers')
+ok('id="covbtn"' in html or 'ib.id="covbtn"' in html,'nav: cover icon in header')
 if not os.environ.get('NOPROBE'):
   r=subprocess.run(['sh','/workspace/work/folio/api_probe.sh'],capture_output=True,text=True);
   print(r.stdout[-1500:] if r.returncode else '');ok(r.returncode==0,'live API probe: no 5xx (reflects deployed version)')
@@ -59,6 +61,21 @@ ok('function top1(arr, n)' in s and 'demoteFC(top1(' in s and 'const wHead = top
 ok('const TEAM_FIDS = [1, 16447]' in s and s.count('!isTeam(x)')>=4 and 'From Farcaster &amp; Folio' in html and 'data.team.slice(0,2)' in html,'team (@pk, @farcaster) not ranked; small Not ranked section at end of Today')
 ok('family=Inter:wght@400;500;600;700&family=Spectral' in html and '--title:\\"Inter\\"' in s and '.row h3{font-family:var(--title)' in html and 'article.r h1{font-family:var(--title)' in html and '--serif:\\"Spectral\\"' in s,'fonts: list titles Inter, reading text Spectral')
 ok(html.count('?"":" nocv"')==3 and '.row.nocv{grid-template-columns:28px 1fr}' in html and '<span></span>' not in html and ':nc(x)}' not in html,'rows: no-cover pieces use full width, no empty space')
+# Zero Hour (sealed texts) 2026-11-19
+r=subprocess.run(['node','/workspace/work/folio/e2e/zh_unit.mjs'],capture_output=True,text=True)
+ok(r.returncode==0,'zero hour: server unit test (no body before open, withdraw blocked after half, open date 1 day to 1 year, auth, cap) '+(r.stdout.strip().splitlines() or [''])[-1]+' '+' | '.join(l for l in r.stdout.splitlines() if l.startswith('FAIL'))[:300])
+zb=s[s.index('// ==== ZERO HOUR (sealed texts) START'):s.index('// ==== ZERO HOUR (sealed texts) END')]
+ok(zb.count('"b:" + x.id)')==2 and zb.count('"b:" + id')==1 and 'async function slBodyIfOpen(env, x) { if (slSt(x) !== "open") return null; const b = await env.KV.get(slP(env) + "b:" + x.id)' in zb and zb.count('env.KV.get(slP(env) + "b:"')==1,'zero hour: body key read only through slBodyIfOpen')
+ok('if (Date.now() >= slHalf(x)) return J({ error: "locked"' in zb and 'oa < nowT + DAY - 6e5 || oa > nowT + 366 * DAY' in zb,'zero hour: withdraw half-way lock + open date range in code')
+ok('if (p === "/api/sealed") return await slApi(env, req, url);' in s and 'ctx.waitUntil(slTick(env' in s and 'id="zhtop"' in html and 'See all Zero Hour texts' in html and 'window.__zhOpen=zopen' in html,'zero hour: route, cron hook, Today card, list page')
+if not os.environ.get('NOPROBE'):
+  try:
+    import urllib.request
+    j=json.loads(urllib.request.urlopen(urllib.request.Request('https://folio.pedieth.workers.dev/api/sealed',headers={'user-agent':'curl/8.5'}),timeout=20).read())
+    ok(all('b' not in x for x in j.get('items',[]) if x.get('st')!='open'),'zero hour live: no body for sealed items in /api/sealed')
+    try: urllib.request.urlopen(urllib.request.Request('https://folio.pedieth.workers.dev/api/sealed',data=b'{"do":"seal"}',method='POST',headers={'content-type':'application/json','user-agent':'curl/8.5'}),timeout=20); ok(False,'zero hour live: unauthenticated POST rejected')
+    except urllib.error.HTTPError as x: ok(x.code==401,'zero hour live: unauthenticated POST rejected ('+str(x.code)+')')
+  except Exception as x: ok(False,'zero hour live probe '+str(x)[:120])
 sys.exit(1 if bad else 0)
 ok('async function gameApi(' in s and 'if (p === "/api/game") return await gameApi' in s and 'id="gmc"' in html,'game: Who wrote it? API + Today card')
 ok('async function wmApi(' in s and 'wmPing(env' in s and 'wmBox.style.display="block"' in html,'want more: API, new-piece ping, button shown')

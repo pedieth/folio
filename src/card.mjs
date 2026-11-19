@@ -145,7 +145,7 @@ ${s > 1 ? `<text x="620" y="520" font-family="Noto Sans" font-weight="700" font-
 }
 export async function render(wasm, fonts, opts) {
   await init(wasm);
-  const r = new Resvg(opts.game ? svgGame(opts) : opts.cover ? svgCover(opts) : opts.quote ? svgQuote(opts) : svg(opts), { fitTo: { mode: "width", value: opts.game ? 2400 : opts.cover && opts.portrait ? 900 : 1200 }, font: { fontBuffers: fonts, loadSystemFonts: false, defaultFontFamily: "Noto Sans", serifFamily: "Noto Serif" } });
+  const r = new Resvg(opts.game ? svgGame(opts) : opts.cover ? svgCover(opts) : opts.quote ? svgQuote(opts) : svg(opts), { fitTo: { mode: "width", value: opts.w || (opts.game ? 2400 : opts.cover && opts.portrait ? 900 : 1200) }, font: { fontBuffers: fonts, loadSystemFonts: false, defaultFontFamily: "Noto Sans", serifFamily: "Noto Serif" } });
   return r.render().asPng();
 }
 // ---------- "Who wrote it?" 2-scene share card (2026-11-18) ----------
@@ -164,10 +164,11 @@ function gcSquares(res, x, y, S, gap) {
 // o.ans: correct index (-1 = unknown / hidden), o.pk: the player's picks in order (indices, may be partly unknown)
 const INK = "#22345C", HF = "Caveat, Noto Sans";
 function gcPaperUI(x, y, w, h, o, R) {
+  if (o.one && w / h > 1.8) return gcPaperWide(x, y, w, h, o); // s15: short wide paper -> heading + 2x2 options
   const opts = Array.isArray(o.opts) && o.opts.length === 4 ? o.opts : null, ans = Number.isInteger(o.ans) && o.ans >= 0 && o.ans < 4 ? o.ans : -1;
   const pk = (Array.isArray(o.pk) ? o.pk : []).slice(0, 2), fin = pk.length ? pk[pk.length - 1] : -1;
-  const big = !!o.one, hs = Math.min(h * (big ? 0.2 : 0.24), w * 0.135), lh = (h - hs * (big ? 1.15 : 1.25)) / 4, fs = Math.min(lh * (big ? 1.0 : 0.9), w * 0.125);
-  const SW = big ? ` stroke="${INK}" stroke-width="${Math.max(0.5, fs * 0.03).toFixed(2)}"` : ""; // s11: bigger, slightly bolder handwriting on the single scene
+  const big = !!o.one, hs = Math.min(h * (big ? 0.2 : 0.24), w * 0.135), lh = (h - hs * (big ? 1.15 : 1.25)) / 4, fs0 = Math.min(lh * (big ? 0.95 : 0.9), w * 0.125), LN = Array.isArray(o.opts) ? Math.max(8, ...o.opts.map(q => String(q && (q.u ? '@' + q.u : q.n) || '').length)) : 8, fs = big ? Math.min(fs0, (w * 0.86) / (1.0 + LN * (o.hf ? 0.43 : 0.5))) : fs0; // s14: always fits inside the paper
+  const SW = big ? ` stroke="${INK}" stroke-width="${Math.max(0.7, fs * 0.05).toFixed(2)}"` : ""; // s11: bigger, slightly bolder handwriting on the single scene
   const cx = x + w / 2, lx = x + w * 0.06, nx = lx + fs * 0.95, cw = fs * (o.hf ? 0.43 : 0.56), maxc = Math.max(4, Math.floor((x + w - nx - fs * 1.1) / cw));
   const L = ["A", "B", "C", "D"], f2 = v => v.toFixed(1);
   let out = `<text x="${f2(cx)}" y="${f2(y + hs * 0.95)}" text-anchor="middle" font-family="${HF}" font-size="${f2(hs)}" fill="${INK}"${SW}>Who wrote it? #${X(String(o.no))}</text>`;
@@ -192,6 +193,27 @@ function gcPaperUI(x, y, w, h, o, R) {
   }
   return out;
 }
+// s15 (2026-11-19): a short, wide sheet: heading on top, options in two columns, always inside the box
+function gcPaperWide(x, y, w, h, o) {
+  const opts = Array.isArray(o.opts) && o.opts.length === 4 ? o.opts : null, ans = Number.isInteger(o.ans) && o.ans >= 0 && o.ans < 4 ? o.ans : -1;
+  const pk = (Array.isArray(o.pk) ? o.pk : []).slice(0, 2), fin = pk.length ? pk[pk.length - 1] : -1, f2 = v => v.toFixed(1);
+  const SW = fz => ` stroke="${INK}" stroke-width="${Math.max(0.6, fz * 0.05).toFixed(2)}"`;
+  const hs = Math.min(h * 0.36, w * 0.09), cw = w / 2, rows = h - hs * 1.2, lh = rows / 2;
+  const nm = i => opts ? String(opts[i].u ? "@" + opts[i].u : opts[i].n || "") : "";
+  const LN = opts ? Math.max(6, ...[0, 1, 2, 3].map(i => nm(i).length)) : 6, k = o.hf ? 0.43 : 0.5;
+  const fs = Math.min(lh * 0.8, (cw * 0.9) / (1.0 + LN * k));
+  const cx = x + w / 2; let out = `<text x="${f2(cx)}" y="${f2(y + hs * 0.9)}" text-anchor="middle" font-family="${HF}" font-size="${f2(hs)}" fill="${INK}"${SW(hs)}>Who wrote it? #${X(String(o.no))}</text>`;
+  const L = ["A", "B", "C", "D"];
+  for (let i = 0; i < 4; i++) {
+    const col = i % 2, row = i >> 1, lx = x + col * cw + cw * 0.04, nx = lx + fs * 0.95, ty = y + hs * 1.2 + lh * row + lh * 0.5 + fs * 0.32, t = nm(i), tw = opts ? t.length * fs * k : cw * 0.5, ex = nx + tw;
+    out += `<text x="${f2(lx)}" y="${f2(ty)}" font-family="${HF}" font-size="${f2(fs)}" fill="${INK}"${SW(fs)}>${L[i]}</text>`;
+    out += opts ? `<text x="${f2(nx)}" y="${f2(ty)}" font-family="${HF}" font-size="${f2(fs)}" fill="${INK}"${SW(fs)}>${X(t)}</text>` : `<path d="M${f2(nx)} ${f2(ty)} L${f2(ex)} ${f2(ty)}" stroke="${INK}" stroke-width="${f2(Math.max(1, fs * 0.05))}" opacity="0.55"/>`;
+    if (pk.includes(i) && i !== ans && ans >= 0) out += `<path d="M${f2(lx - fs * 0.1)} ${f2(ty - fs * 0.28)} L${f2(ex + fs * 0.1)} ${f2(ty - fs * 0.32)}" stroke="${GNO}" stroke-width="${f2(Math.max(1.2, fs * 0.08))}" stroke-linecap="round"/>`;
+    if (i === fin) { const rx = (ex - lx) / 2 + fs * 0.4, ry = lh * 0.48, ecx = (lx + ex) / 2, ecy = ty - fs * 0.3; out += `<ellipse cx="${f2(ecx)}" cy="${f2(ecy)}" rx="${f2(rx)}" ry="${f2(ry)}" fill="none" stroke="${INK}" stroke-width="${f2(Math.max(1.2, fs * 0.07))}" transform="rotate(-2 ${f2(ecx)} ${f2(ecy)})"/>`; }
+    if (i === ans) { const kx = ex + fs * (i === fin ? 0.55 : 0.25), q = fs / 30; out += `<path d="M${f2(kx)} ${f2(ty - 10 * q)} L${f2(kx + 7 * q)} ${f2(ty - 2 * q)} L${f2(kx + 22 * q)} ${f2(ty - 24 * q)}" fill="none" stroke="${GOK}" stroke-width="${f2(Math.max(1.4, 3.6 * q))}" stroke-linecap="round" stroke-linejoin="round"/>`; }
+  }
+  return out;
+}
 // s8 (2026-11-18): one wide scene across the whole card; the question is written on the detected paper (scr, 512-normalised per axis)
 function svgGameCard1(o, R) {
   const X0 = 14, Y0 = 14, W = GW - 28, H = GT.h, iw = 896, ih = 512;
@@ -202,7 +224,7 @@ function svgGameCard1(o, R) {
     const ix = w * 0.04, iy = h * 0.02; x += ix; y += iy; w -= 2 * ix; h -= 2 * iy;
     const x0 = Math.max(x, X0 + 6), x1 = Math.min(x + w, X0 + W - 6); x = x0; w = x1 - x0;
     if (w > 420) { const k = (w - 420) / 2; x += k; w = 420; } // keep the handwriting paper-sized on a wide scene
-    if (w >= 150 && h >= 95) scr = `<g clip-path="url(#g1)"><g transform="rotate(-1.5 ${(x + w / 2).toFixed(1)} ${(y + h / 2).toFixed(1)})">${gcPaperUI(x, y, w, h, o, R)}</g></g>`;
+    if (w >= 150 && h >= (w / h > 1.8 ? 50 : 95)) scr = `<g clip-path="url(#g1)"><g transform="rotate(-1.5 ${(x + w / 2).toFixed(1)} ${(y + h / 2).toFixed(1)})">${gcPaperUI(x, y, w, h, o, R)}</g></g>`;
   }
   const img = `<image href="${o.a}" x="${ox.toFixed(1)}" y="${oy.toFixed(1)}" width="${dw.toFixed(1)}" height="${dh.toFixed(1)}" preserveAspectRatio="none" clip-path="url(#g1)"/>`;
   return svgGameCardShell(o, R, `<clipPath id="g1"><rect x="${X0}" y="${Y0}" width="${W}" height="${H}"/></clipPath>`, img + scr);
@@ -289,4 +311,38 @@ export async function gcHist(wasm, uri) {
   const px = r.render().pixels, h = new Float64Array(64); let n = 0;
   for (let i = 0; i < px.length; i += 4) { if (px[i + 3] < 128) continue; h[(px[i] >> 6) * 16 + (px[i + 1] >> 6) * 4 + (px[i + 2] >> 6)]++; n++; }
   return Array.from(h, v => v / (n || 1));
+}
+// ---------- Zero Hour (sealed texts) share card, 2026-11-19: 1200x800 (3:2), dark card with gold frame; green when opened ----------
+export function svgSealCard(o) {
+  const t = clean(o.title) || "Untitled", L = wrap(t, t.length > 60 ? 34 : 28, 3), fs = t.length > 60 ? 54 : 62;
+  const open = o.st === "open", wd = o.st === "wd";
+  const fr = open ? "#3FA36B" : wd ? "#8A8478" : "#C9A24A", acc = open ? "#7FD3A1" : wd ? "#BDB5A6" : "#E9C46A";
+  const ms = Math.max(0, +o.left || 0), d = Math.floor(ms / 864e5), h = Math.floor(ms % 864e5 / 36e5), m = Math.floor(ms % 36e5 / 6e4);
+  const big = open ? "READ IT NOW" : wd ? "WITHDRAWN" : d ? `${d}d ${String(h).padStart(2, "0")}h` : `${h}h ${String(m).padStart(2, "0")}m`;
+  const date = new Date(+o.oa || Date.now()).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+  const sub = open ? "OPENED " + date.toUpperCase() : wd ? "BY THE WRITER" : "OPENS IN";
+  const n = +o.n || 0, foot = (open ? n + (n === 1 ? " was" : " were") + " waiting" : n + " waiting") + " \u00B7 Folio";
+  const lock = `<g transform="translate(92 92)" fill="none" stroke="${acc}" stroke-width="3.4" stroke-linecap="round"><rect x="0" y="12" width="22" height="17" rx="3"/><path d="M4.5 12V7.5a6.5 6.5 0 0 1 13 0V12"/></g>`;
+  const tl = L.map((l, i) => `<text x="92" y="${226 + i * fs * 1.18}" font-family="Noto Serif" font-weight="700" font-size="${fs}" fill="#F4EFE6">${X(l)}</text>`).join("");
+  const nm = "@" + clean(o.user || "");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1A17"/><stop offset="1" stop-color="#3A3125"/></linearGradient><clipPath id="pp"><circle cx="124" cy="606" r="32"/></clipPath></defs>
+<rect width="1200" height="800" fill="#141310"/>
+<rect x="28" y="28" width="1144" height="744" rx="34" fill="url(#g)" stroke="${fr}" stroke-width="5"/>
+<rect x="44" y="44" width="1112" height="712" rx="24" fill="none" stroke="${fr}" stroke-opacity=".35" stroke-width="1.5"/>
+${lock}<text x="130" y="119" font-family="Noto Sans" font-weight="700" font-size="26" letter-spacing="5" fill="${acc}">ZERO HOUR</text>
+${tl}
+${o.pfp ? `<image href="${o.pfp}" x="92" y="574" width="64" height="64" preserveAspectRatio="xMidYMid slice" clip-path="url(#pp)"/>` : `<circle cx="124" cy="606" r="32" fill="#5C5244"/>`}
+<text x="172" y="616" font-family="Noto Sans" font-weight="700" font-size="28" fill="#E8E0D2">${X(nm.slice(0, 34))}</text>
+<text x="1108" y="560" text-anchor="end" font-family="Noto Sans" font-weight="700" font-size="22" letter-spacing="4" fill="${acc}">${X(sub)}</text>
+<text x="1108" y="636" text-anchor="end" font-family="Noto Serif" font-weight="700" font-size="${open || wd ? 58 : 76}" fill="${acc}">${X(big)}</text>
+<rect x="92" y="672" width="1016" height="1.5" fill="${fr}" fill-opacity=".45"/>
+<text x="92" y="718" font-family="Noto Sans" font-size="24" fill="#BDB5A6">${X(foot)}</text>
+<text x="1108" y="720" text-anchor="end" font-family="Noto Serif" font-weight="700" font-size="34" fill="#F4EFE6">Folio</text>
+</svg>`;
+}
+export async function renderSealCard(wasm, fonts, o) {
+  await init(wasm);
+  const r = new Resvg(svgSealCard(o), { fitTo: { mode: "width", value: 1200 }, font: { fontBuffers: fonts, loadSystemFonts: false, defaultFontFamily: "Noto Sans", serifFamily: "Noto Serif" } });
+  return r.render().asPng();
 }
