@@ -11,7 +11,7 @@ const J=(o,st=200,h={})=>new Response(JSON.stringify(o),{status:st,headers:{"con
 const isPreview=env=>!!env.PREVIEW;const fcUser=async fid=>({u:"user"+fid,n:"User "+fid,p:"https://imagedelivery.net/x/"+fid+"/original"});
 const qaFid=async(req)=>{const a=req.headers.get("authorization")||"";return a.startsWith("Bearer fid")?+a.slice(10):0};
 const subsOf=async env=>env.__subs||{};const ogData=async()=>null;const renderSealCard=async()=>new Uint8Array([1]);`;
-const mod = await import("data:text/javascript;base64," + Buffer.from(pre + block + "\nexport { slApi, slTick, slMeta, slPub, slHalf };").toString("base64"));
+const mod = await import("data:text/javascript;base64," + Buffer.from(pre + block + "\nexport { slApi, slTick, slMeta, slPub, slHalf, SL_SNAP };").toString("base64"));
 const mem = new Map();
 const dl=()=>new Promise(z=>setTimeout(z,Math.random()*30));
 const KV = { get: async (k, t) => { await dl(); const v = mem.get(k); if (v == null) return null; return t === "json" ? JSON.parse(v) : v; }, put: async (k, v) => { await dl(); mem.set(k, String(v)); }, delete: async k => { mem.delete(k); } };
@@ -25,5 +25,5 @@ mem.set("sl:idx",JSON.stringify([{id:"aa11",t:"Old seal",fid:5,u:"u5",n:"",p:"",
 env.DB=makeD1();
 let L=await call("GET","?id=aa11",0); ok(L.s===200&&L.j.n===2,"old KV seal imported into D1 with its 2 reminders");
 ok(mem.has("sl:idx")&&mem.has("sl:migd1"),"old KV index kept as backup, import flagged once");
-await call("POST","",9,{do:"rem",id:"aa11"}); L=await call("GET","?id=aa11",0); ok(L.j.n===3,"new remind after import works");
+await call("POST","",9,{do:"rem",id:"aa11"}); for(const k in mod.SL_SNAP)delete mod.SL_SNAP[k]; L=await call("GET","?id=aa11",0); ok(L.j.n===3,"new remind after import works");
 console.log("ZH MIG "+(n-bad)+" / "+n);

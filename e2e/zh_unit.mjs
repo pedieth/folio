@@ -11,7 +11,7 @@ const J=(o,st=200,h={})=>new Response(JSON.stringify(o),{status:st,headers:{"con
 const isPreview=env=>!!env.PREVIEW;const fcUser=async fid=>({u:"user"+fid,n:"User "+fid,p:"https://imagedelivery.net/x/"+fid+"/original"});
 const qaFid=async(req)=>{const a=req.headers.get("authorization")||"";return a.startsWith("Bearer fid")?+a.slice(10):0};
 const subsOf=async env=>env.__subs||{};const ogData=async()=>null;const renderSealCard=async()=>new Uint8Array([1]);`;
-const mod = await import("data:text/javascript;base64," + Buffer.from(pre + block + "\nexport { slApi, slTick, slMeta, slPub, slHalf };").toString("base64"));
+const mod = await import("data:text/javascript;base64," + Buffer.from(pre + block + "\nexport { slApi, slTick, slMeta, slPub, slHalf, SL_SNAP };").toString("base64"));
 const mem = new Map();
 const KV = { get: async (k, t) => { const v = mem.get(k); if (v == null) return null; return t === "json" ? JSON.parse(v) : v; }, put: async (k, v) => { mem.set(k, String(v)); }, delete: async k => { mem.delete(k); } };
 const sent = []; globalThis.fetch = async (u, o) => { sent.push(JSON.parse(o.body)); return new Response("{}"); };
@@ -20,7 +20,7 @@ let bad = 0, n = 0; const ok = (c, m) => { n++; if (!c) bad++; console.log((c ? 
 const call = async (method, q, fid, body) => { const url = new URL("https://folio.test/api/sealed" + (q || "")); const h = {}; if (fid) h.authorization = "Bearer fid" + fid; if (body) h["content-type"] = "application/json"; const req = new Request(url, { method, headers: h, body: body ? JSON.stringify(body) : undefined }); const r = await mod.slApi(env, req, url); const t = await r.text(); return { s: r.status, j: JSON.parse(t), t }; };
 
 const idxStr = async () => env.DB ? JSON.stringify((await env.DB.prepare("SELECT j FROM zh_s").all()).results) : mem.get("sl:idx");
-const editSeal = async (id, fn) => { if (env.DB) { const r = await env.DB.prepare("SELECT j FROM zh_s WHERE id = ?").bind(id).first(); const x = JSON.parse(r.j); fn(x); await env.DB.prepare("UPDATE zh_s SET j = ? WHERE id = ?").bind(JSON.stringify(x), id).run(); } else { const a = JSON.parse(mem.get("sl:idx")); fn(a.find(q => q.id === id)); mem.set("sl:idx", JSON.stringify(a)); } };
+const editSeal = async (id, fn) => { if (env.DB) { const r = await env.DB.prepare("SELECT j FROM zh_s WHERE id = ?").bind(id).first(); const x = JSON.parse(r.j); fn(x); await env.DB.prepare("UPDATE zh_s SET j = ? WHERE id = ?").bind(JSON.stringify(x), id).run(); for (const k in mod.SL_SNAP) delete mod.SL_SNAP[k]; } else { const a = JSON.parse(mem.get("sl:idx")); fn(a.find(q => q.id === id)); mem.set("sl:idx", JSON.stringify(a)); } };
 const SECRET = "SECRET-BODY-zx81 this must never leak before open";
 const now = Date.now(), DAY = 864e5;
 // auth

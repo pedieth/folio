@@ -2064,6 +2064,7 @@ async function slDb(env) {
   const db = env.DB; if (!db || !db.prepare) return null; const P = slP(env);
   if (!SL_INIT[P]) SL_INIT[P] = (async () => {
     await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS zh_s (ns TEXT NOT NULL, id TEXT NOT NULL, sa INTEGER, j TEXT NOT NULL, PRIMARY KEY (ns, id))"), db.prepare("CREATE TABLE IF NOT EXISTS zh_x (ns TEXT NOT NULL, id TEXT NOT NULL, fid INTEGER NOT NULL, k TEXT NOT NULL, v TEXT, at INTEGER, PRIMARY KEY (ns, id, fid, k))")]);
+    await db.batch([db.prepare("CREATE INDEX IF NOT EXISTS zh_x_fid ON zh_x (ns, fid)"), db.prepare("CREATE INDEX IF NOT EXISTS zh_s_sa ON zh_s (ns, sa)")]);
     if (!(await env.KV.get(P + "migd1"))) { // one-time import of seals made before D1 (old KV idx stays as a backup)
       const old = await slLoadKV(env); const st = [];
       for (const x of old) { st.push(db.prepare("INSERT OR IGNORE INTO zh_s (ns, id, sa, j) VALUES (?, ?, ?, ?)").bind(P, x.id, x.sa || 0, slStrip(x)));
@@ -2084,6 +2085,40 @@ async function slLoad(env) {
   for (const r of b.results || []) { const x = by[r.id]; if (!x) continue; if (r.k === "r") x.r[r.fid] = r.v || ""; else if (r.k === "v" && (r.v === "r" || r.v === "w")) x.v[r.v][r.fid] = 1; }
   return all;
 }
+// shared snapshot: the full list is rebuilt at most once per 60 s per worker; never older than 60 s
+const SL_SNAP_MS = 60000; const SL_SNAP = {};
+async function slSnap(env) {
+  const P = slP(env); const c = SL_SNAP[P]; const t = Date.now();
+  if (c && c.all && t - c.t < SL_SNAP_MS) return c;
+  if (c && c.p) return c.p;
+  const p = slLoad(env).then(all => { const o = { t, all, bodies: (c && c.bodies) || {} }; SL_SNAP[P] = o; return o; }).catch(e => { if (SL_SNAP[P] && SL_SNAP[P].p) delete SL_SNAP[P].p; throw e; });
+  SL_SNAP[P] = { ...(c || {}), p }; return p;
+}
+function slSnapPatch(env, id, fn) { const c = SL_SNAP[slP(env)]; const x = c && c.all && c.all.find(s => s.id === id); if (x) fn(x); }
+// what one user sees: snapshot + seals newer than it + that user's own reminders and votes (always current)
+async function slView(env, fid) {
+  let db = null; try { db = await slDb(env); } catch (e) { db = null; } if (!db) return slLoad(env);
+  const sn = await slSnap(env); const P = slP(env);
+  const qs = [db.prepare("SELECT j FROM zh_s WHERE ns = ? AND sa >= ?").bind(P, sn.t - 120000)];
+  if (fid) qs.push(db.prepare("SELECT id, k, v FROM zh_x WHERE ns = ? AND fid = ?").bind(P, fid));
+  const rs = await db.batch(qs);
+  const all = sn.all.slice(); const idx = {}; all.forEach((x, i) => idx[x.id] = i);
+  for (const r of (rs[0].results || [])) { let x; try { x = JSON.parse(r.j); } catch (e) { continue; } if (idx[x.id] === undefined) { x.r = {}; x.v = { r: {}, w: {} }; idx[x.id] = all.length; all.push(x); } }
+  if (fid) {
+    const mineR = {}, mineV = {}; for (const r of (rs[1].results || [])) { if (r.k === "r") mineR[r.id] = r.v || ""; else if (r.k === "v") mineV[r.id] = r.v; }
+    for (let i = 0; i < all.length; i++) {
+      const x = all[i]; const hasR = x.r && x.r[fid] !== undefined, wantR = mineR[x.id] !== undefined;
+      const hasV = !!(x.v && ((x.v.r || {})[fid] || (x.v.w || {})[fid])), wantV = mineV[x.id] === "r" || mineV[x.id] === "w";
+      if (hasR === wantR && hasV === wantV) continue;
+      const y = { ...x, r: { ...(x.r || {}) }, v: { r: { ...((x.v && x.v.r) || {}) }, w: { ...((x.v && x.v.w) || {}) } } };
+      if (wantR) y.r[fid] = mineR[x.id]; else delete y.r[fid];
+      if (wantV) y.v[mineV[x.id]][fid] = 1;
+      all[i] = y;
+    }
+  }
+  return all;
+}
+async function slBodyCached(env, x) { const c = SL_SNAP[slP(env)]; if (c && c.bodies && c.bodies[x.id] !== undefined) return c.bodies[x.id]; const b = await slBodyIfOpen(env, x); if (b !== null && c && c.bodies) c.bodies[x.id] = b; return b; }
 async function slPutSeal(env, x) { const db = await slDb(env).catch(() => null); if (db) { await db.prepare("INSERT OR REPLACE INTO zh_s (ns, id, sa, j) VALUES (?, ?, ?, ?)").bind(slP(env), x.id, x.sa || 0, slStrip(x)).run(); return true; } return false; }
 async function slX(env, sql, ...args) { const db = await slDb(env).catch(() => null); if (!db) return false; await db.prepare(sql).bind(slP(env), ...args).run(); return true; }
 async function slSave(env, a) { await env.KV.put(slP(env) + "idx", JSON.stringify(a)); }
@@ -2114,17 +2149,17 @@ async function slApi(env, req, url) {
   const NC = { "cache-control": "private, no-store" };
   const fid = (req.headers.get("authorization") || req.headers.get("x-zh-fid")) ? await slFidOf(env, req, url) : 0;
   if (req.method === "GET") {
-    const all = await slLoad(env); const id = url.searchParams.get("id");
+    const all = await slView(env, fid); const id = url.searchParams.get("id");
     if (id) {
       const x = all.find(s => s.id === id); if (!x) return J({ error: "not found" }, 404, NC);
-      const o = slPub(x, fid); const b = await slBodyIfOpen(env, x);
+      const o = slPub(x, fid); const b = await slBodyCached(env, x);
       if (b !== null) { o.b = b; o.fpOk = (await slSha(x.t + "\n" + b)) === x.fp; }
       return J(o, 200, NC);
     }
     const nowT = Date.now();
     const items = all.map(x => slPub(x, fid));
     const opened = all.filter(x => slSt(x, nowT) === "open").sort((a, b) => b.oa - a.oa).slice(0, 20);
-    const bodies = {}; await Promise.all(opened.map(async x => { const b = await slBodyIfOpen(env, x); if (b !== null) bodies[x.id] = b; }));
+    const bodies = {}; await Promise.all(opened.map(async x => { const b = await slBodyCached(env, x); if (b !== null) bodies[x.id] = b; }));
     for (const o of items) if (o.st === "open" && bodies[o.id] != null) o.b = bodies[o.id];
     return J({ now: nowT, items }, 200, NC);
   }
@@ -2149,13 +2184,13 @@ async function slApi(env, req, url) {
     await env.KV.put(rk, String(rc + 1), { expirationTtl: 2 * 86400 });
     return J({ ok: 1, id, fp, oa: x.oa, sa: x.sa, half: slHalf(x) });
   }
-  const all = await slLoad(env); const x = all.find(s => s.id === String(q.id || "")); if (!x) return J({ error: "not found" }, 404);
+  const all = await slView(env, fid); const x = all.find(s => s.id === String(q.id || "")); if (!x) return J({ error: "not found" }, 404);
   const st = slSt(x, nowT);
   if (q.do === "rem") {
     if (st !== "sealed") return J({ error: "closed" }, 409); if (fid === x.fid) return J({ error: "own" }, 403);
     const on = !(x.r && x.r[fid] !== undefined); const pp = on ? ((await slUser(env, fid)).p || "") : "";
     const dbok = on ? await slX(env, "INSERT OR REPLACE INTO zh_x (ns, id, fid, k, v, at) VALUES (?, ?, ?, 'r', ?, ?)", x.id, fid, pp, nowT) : await slX(env, "DELETE FROM zh_x WHERE ns = ? AND id = ? AND fid = ? AND k = 'r'", x.id, fid);
-    const back = dbok ? await slLoad(env) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (!y) return; y.r = y.r || {}; if (on) y.r[fid] = pp; else delete y.r[fid]; }, a => { const y = a.find(s => s.id === x.id); return !y || ((y.r || {})[fid] !== undefined) === on; });
+    const back = dbok ? await slView(env, fid) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (!y) return; y.r = y.r || {}; if (on) y.r[fid] = pp; else delete y.r[fid]; }, a => { const y = a.find(s => s.id === x.id); return !y || ((y.r || {})[fid] !== undefined) === on; });
     const y = back.find(s => s.id === x.id) || x; return J({ ok: 1, on, ...slPub(y, fid) });
   }
   if (q.do === "wd") {
@@ -2163,7 +2198,7 @@ async function slApi(env, req, url) {
     if (Date.now() >= slHalf(x)) return J({ error: "locked", msg: "Past the half-way point. This one opens no matter what." }, 403);
     await env.KV.delete(P + "b:" + x.id);
     const xw = { ...x, wd: nowT }; delete xw.fp;
-    const back = (await slPutSeal(env, xw)) ? await slLoad(env) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (y && !y.wd) { y.wd = nowT; delete y.fp; } }, a => { const y = a.find(s => s.id === x.id); return !y || !!y.wd; });
+    const back = (await slPutSeal(env, xw)) ? (slSnapPatch(env, x.id, y => { y.wd = nowT; delete y.fp; }), (await slView(env, fid)).map(y => y.id === x.id ? { ...y, wd: nowT, fp: undefined } : y)) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (y && !y.wd) { y.wd = nowT; delete y.fp; } }, a => { const y = a.find(s => s.id === x.id); return !y || !!y.wd; });
     const y = back.find(s => s.id === x.id) || x; return J({ ok: 1, ...slPub(y, fid) });
   }
   if (q.do === "vote") {
@@ -2172,7 +2207,7 @@ async function slApi(env, req, url) {
     x.v = x.v || { r: {}, w: {} }; x.v.r = x.v.r || {}; x.v.w = x.v.w || {};
     if (x.v.r[fid] || x.v.w[fid]) return J({ error: "voted", ...slPub(x, fid) }, 409);
     const dbv = await slX(env, "INSERT OR IGNORE INTO zh_x (ns, id, fid, k, v, at) VALUES (?, ?, ?, 'v', ?, ?)", x.id, fid, v, nowT);
-    const back = dbv ? await slLoad(env) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (!y) return; y.v = y.v || { r: {}, w: {} }; y.v.r = y.v.r || {}; y.v.w = y.v.w || {}; if (!y.v.r[fid] && !y.v.w[fid]) y.v[v][fid] = 1; }, a => { const y = a.find(s => s.id === x.id); return !y || !!(y.v && ((y.v.r || {})[fid] || (y.v.w || {})[fid])); });
+    const back = dbv ? await slView(env, fid) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (!y) return; y.v = y.v || { r: {}, w: {} }; y.v.r = y.v.r || {}; y.v.w = y.v.w || {}; if (!y.v.r[fid] && !y.v.w[fid]) y.v[v][fid] = 1; }, a => { const y = a.find(s => s.id === x.id); return !y || !!(y.v && ((y.v.r || {})[fid] || (y.v.w || {})[fid])); });
     const y = back.find(s => s.id === x.id) || x; return J({ ok: 1, ...slPub(y, fid) });
   }
   return J({ error: "bad" }, 400);
@@ -2196,7 +2231,7 @@ async function slTick(env, origin) {
 async function slCard(env, id, url, ctx) {
   const H = { "content-type": "image/png", "cache-control": "public, max-age=900" };
   try {
-    const x = (await slLoad(env)).find(s => s.id === id); if (!x) return new Response("not found", { status: 404 });
+    const x = (await slView(env, 0)).find(s => s.id === id); if (!x) return new Response("not found", { status: 404 });
     const ck = new Request(url.origin + "/zh/" + id + ".png?h=" + Math.floor(Date.now() / 36e5) + "&s=" + slSt(x) + "&n=" + Object.keys(x.r || {}).length);
     try { const hit = await caches.default.match(ck); if (hit) return hit; } catch (e) {}
     if (!FONTS) FONTS = (await Promise.all(["NSerifB", "NSans", "NSansB"].map(f => env.KV.get("font:" + f, "arrayBuffer")))).map(b => new Uint8Array(b));
@@ -2210,7 +2245,7 @@ async function slCard(env, id, url, ctx) {
   }
 }
 async function slMeta(env, origin, id) {
-  const x = (await slLoad(env)).find(s => s.id === id); if (!x) return null; const st = slSt(x);
+  const x = (await slView(env, 0)).find(s => s.id === id); if (!x) return null; const st = slSt(x);
   const d = new Date(x.oa).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
   return { title: "Zero Hour: " + x.t + " by @" + x.u + " | Folio", desc: st === "open" ? "Opened on Folio. Read it now." : st === "wd" ? "Withdrawn by the writer." : "Sealed on Folio. Nobody can read it before " + d + ".", img: origin + "/zh/" + x.id + ".png?h=" + Math.floor(Date.now() / 36e5), btn: st === "open" ? "Read it now" : "See countdown", target: origin + "/?seal=" + x.id };
 }
