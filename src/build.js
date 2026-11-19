@@ -2057,8 +2057,38 @@ const ZH_TMAX = 120, ZH_TMIN = 3, ZH_BMIN = 20, ZH_BMAX = 10000, ZH_DAYCAP = 3;
 const slP = env => isPreview(env) ? "slp:" : "sl:";
 const slHalf = x => x.sa + (x.oa - x.sa) / 2;
 const slSt = (x, t) => x.wd ? "wd" : (t || Date.now()) >= x.oa ? "open" : "sealed";
-async function slLoad(env) { const v = await env.KV.get(slP(env) + "idx", "json"); return Array.isArray(v) ? v : []; }
+async function slLoadKV(env) { const v = await env.KV.get(slP(env) + "idx", "json"); return Array.isArray(v) ? v : []; }
+const SL_INIT = {};
+const slStrip = x => { const o = { ...x }; delete o.r; delete o.v; return JSON.stringify(o); };
+async function slDb(env) {
+  const db = env.DB; if (!db || !db.prepare) return null; const P = slP(env);
+  if (!SL_INIT[P]) SL_INIT[P] = (async () => {
+    await db.batch([db.prepare("CREATE TABLE IF NOT EXISTS zh_s (ns TEXT NOT NULL, id TEXT NOT NULL, sa INTEGER, j TEXT NOT NULL, PRIMARY KEY (ns, id))"), db.prepare("CREATE TABLE IF NOT EXISTS zh_x (ns TEXT NOT NULL, id TEXT NOT NULL, fid INTEGER NOT NULL, k TEXT NOT NULL, v TEXT, at INTEGER, PRIMARY KEY (ns, id, fid, k))")]);
+    if (!(await env.KV.get(P + "migd1"))) { // one-time import of seals made before D1 (old KV idx stays as a backup)
+      const old = await slLoadKV(env); const st = [];
+      for (const x of old) { st.push(db.prepare("INSERT OR IGNORE INTO zh_s (ns, id, sa, j) VALUES (?, ?, ?, ?)").bind(P, x.id, x.sa || 0, slStrip(x)));
+        for (const [f, p] of Object.entries(x.r || {})) st.push(db.prepare("INSERT OR IGNORE INTO zh_x (ns, id, fid, k, v, at) VALUES (?, ?, ?, 'r', ?, ?)").bind(P, x.id, +f, p || "", x.sa || 0));
+        for (const k of ["r", "w"]) for (const f of Object.keys((x.v && x.v[k]) || {})) st.push(db.prepare("INSERT OR IGNORE INTO zh_x (ns, id, fid, k, v, at) VALUES (?, ?, ?, 'v', ?, ?)").bind(P, x.id, +f, k, x.sa || 0)); }
+      for (let i = 0; i < st.length; i += 50) await db.batch(st.slice(i, i + 50));
+      await env.KV.put(P + "migd1", String(Date.now()));
+    }
+  })().catch(e => { delete SL_INIT[P]; throw e; });
+  await SL_INIT[P]; return db;
+}
+async function slLoad(env) {
+  let db = null; try { db = await slDb(env); } catch (e) { db = null; } if (!db) return slLoadKV(env);
+  const P = slP(env);
+  const [a, b] = await db.batch([db.prepare("SELECT j FROM zh_s WHERE ns = ? ORDER BY sa, id").bind(P), db.prepare("SELECT id, fid, k, v FROM zh_x WHERE ns = ? ORDER BY at, fid").bind(P)]);
+  const all = []; const by = {};
+  for (const r of a.results || []) { let x; try { x = JSON.parse(r.j); } catch (e) { continue; } x.r = {}; x.v = { r: {}, w: {} }; by[x.id] = x; all.push(x); }
+  for (const r of b.results || []) { const x = by[r.id]; if (!x) continue; if (r.k === "r") x.r[r.fid] = r.v || ""; else if (r.k === "v" && (r.v === "r" || r.v === "w")) x.v[r.v][r.fid] = 1; }
+  return all;
+}
+async function slPutSeal(env, x) { const db = await slDb(env).catch(() => null); if (db) { await db.prepare("INSERT OR REPLACE INTO zh_s (ns, id, sa, j) VALUES (?, ?, ?, ?)").bind(slP(env), x.id, x.sa || 0, slStrip(x)).run(); return true; } return false; }
+async function slX(env, sql, ...args) { const db = await slDb(env).catch(() => null); if (!db) return false; await db.prepare(sql).bind(slP(env), ...args).run(); return true; }
 async function slSave(env, a) { await env.KV.put(slP(env) + "idx", JSON.stringify(a)); }
+// apply a change, save, read back and verify; retry if a parallel request overwrote it (2026-11-19)
+async function slMut(env, apply, ok) { let all = []; for (let k = 0; k < 4; k++) { all = await slLoadKV(env); apply(all); await slSave(env, all); const back = await slLoadKV(env); if (ok(back)) return back; all = back; await new Promise(z => setTimeout(z, 40 + Math.random() * 160)); } return all; }
 async function slBodyIfOpen(env, x) { if (slSt(x) !== "open") return null; const b = await env.KV.get(slP(env) + "b:" + x.id); return typeof b === "string" ? b : null; }
 async function slSha(s) { const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)); return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join(""); }
 async function slUser(env, fid) {
@@ -2115,7 +2145,7 @@ async function slApi(env, req, url) {
     const fp = await slSha(t + "\n" + b);
     const x = { id, t, fid, u: u.u || "fid" + fid, n: u.n || "", p: u.p || "", sa: nowT, oa: test ? nowT + test : oa, fp, pred: !!q.pred, r: {}, v: { r: {}, w: {} } };
     await env.KV.put(P + "b:" + id, b);
-    const all = await slLoad(env); all.push(x); await slSave(env, all);
+    if (!(await slPutSeal(env, x))) await slMut(env, a => { if (!a.some(s => s.id === id)) a.push(x); }, a => a.some(s => s.id === id));
     await env.KV.put(rk, String(rc + 1), { expirationTtl: 2 * 86400 });
     return J({ ok: 1, id, fp, oa: x.oa, sa: x.sa, half: slHalf(x) });
   }
@@ -2123,22 +2153,27 @@ async function slApi(env, req, url) {
   const st = slSt(x, nowT);
   if (q.do === "rem") {
     if (st !== "sealed") return J({ error: "closed" }, 409); if (fid === x.fid) return J({ error: "own" }, 403);
-    x.r = x.r || {}; let on;
-    if (x.r[fid] !== undefined) { delete x.r[fid]; on = false; } else { const u = await slUser(env, fid); x.r[fid] = u.p || ""; on = true; }
-    await slSave(env, all); return J({ ok: 1, on, ...slPub(x, fid) });
+    const on = !(x.r && x.r[fid] !== undefined); const pp = on ? ((await slUser(env, fid)).p || "") : "";
+    const dbok = on ? await slX(env, "INSERT OR REPLACE INTO zh_x (ns, id, fid, k, v, at) VALUES (?, ?, ?, 'r', ?, ?)", x.id, fid, pp, nowT) : await slX(env, "DELETE FROM zh_x WHERE ns = ? AND id = ? AND fid = ? AND k = 'r'", x.id, fid);
+    const back = dbok ? await slLoad(env) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (!y) return; y.r = y.r || {}; if (on) y.r[fid] = pp; else delete y.r[fid]; }, a => { const y = a.find(s => s.id === x.id); return !y || ((y.r || {})[fid] !== undefined) === on; });
+    const y = back.find(s => s.id === x.id) || x; return J({ ok: 1, on, ...slPub(y, fid) });
   }
   if (q.do === "wd") {
     if (fid !== x.fid) return J({ error: "own" }, 403); if (st !== "sealed") return J({ error: "closed" }, 409);
     if (Date.now() >= slHalf(x)) return J({ error: "locked", msg: "Past the half-way point. This one opens no matter what." }, 403);
-    x.wd = nowT; delete x.fp; await env.KV.delete(P + "b:" + x.id); await slSave(env, all);
-    return J({ ok: 1, ...slPub(x, fid) });
+    await env.KV.delete(P + "b:" + x.id);
+    const xw = { ...x, wd: nowT }; delete xw.fp;
+    const back = (await slPutSeal(env, xw)) ? await slLoad(env) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (y && !y.wd) { y.wd = nowT; delete y.fp; } }, a => { const y = a.find(s => s.id === x.id); return !y || !!y.wd; });
+    const y = back.find(s => s.id === x.id) || x; return J({ ok: 1, ...slPub(y, fid) });
   }
   if (q.do === "vote") {
     if (!x.pred || st !== "open") return J({ error: "closed" }, 409); if (fid === x.fid) return J({ error: "own" }, 403);
     const v = q.v === "r" ? "r" : q.v === "w" ? "w" : ""; if (!v) return J({ error: "bad" }, 400);
     x.v = x.v || { r: {}, w: {} }; x.v.r = x.v.r || {}; x.v.w = x.v.w || {};
     if (x.v.r[fid] || x.v.w[fid]) return J({ error: "voted", ...slPub(x, fid) }, 409);
-    x.v[v][fid] = 1; await slSave(env, all); return J({ ok: 1, ...slPub(x, fid) });
+    const dbv = await slX(env, "INSERT OR IGNORE INTO zh_x (ns, id, fid, k, v, at) VALUES (?, ?, ?, 'v', ?, ?)", x.id, fid, v, nowT);
+    const back = dbv ? await slLoad(env) : await slMut(env, a => { const y = a.find(s => s.id === x.id); if (!y) return; y.v = y.v || { r: {}, w: {} }; y.v.r = y.v.r || {}; y.v.w = y.v.w || {}; if (!y.v.r[fid] && !y.v.w[fid]) y.v[v][fid] = 1; }, a => { const y = a.find(s => s.id === x.id); return !y || !!(y.v && ((y.v.r || {})[fid] || (y.v.w || {})[fid])); });
+    const y = back.find(s => s.id === x.id) || x; return J({ ok: 1, ...slPub(y, fid) });
   }
   return J({ error: "bad" }, 400);
 }
@@ -2146,7 +2181,9 @@ async function slApi(env, req, url) {
 async function slTick(env, origin) {
   const all = await slLoad(env); const nowT = Date.now();
   const due = all.filter(x => !x.wd && !x.op && nowT >= x.oa).slice(0, 3); if (!due.length) return 0;
-  for (const x of due) x.op = nowT; await slSave(env, all);
+  const ids = new Set(due.map(x => x.id)); for (const x of due) x.op = nowT;
+  let tdb = true; for (const x of due) if (!(await slPutSeal(env, x))) { tdb = false; break; }
+  if (!tdb) await slMut(env, a => { for (const y of a) if (ids.has(y.id) && !y.op) y.op = nowT; }, a => a.filter(y => ids.has(y.id)).every(y => y.op));
   if (isPreview(env)) return due.length;
   const subs = await subsOf(env);
   for (const x of due) {
