@@ -367,8 +367,9 @@ async function feed(env, url, ctx) {
   const nvOff = nvPool.length ? Math.floor(now / (3 * 3600e3)) % nvPool.length : 0;
   const nv = nvPool.length <= 2 ? nvPool : [nvPool[nvOff], nvPool[(nvOff + 1) % nvPool.length]];
   const team = TEAM_FIDS.map(f => items.filter(x => x.a && x.a.fid === f) /* 2026-11-20: no age limit, newest per team account replaces the previous */.sort((a, b) => b.ts - a.ts)[0]).filter(Boolean);
-  const res = J({ today, nv, team, week, latest, writers, count: items.length, updated: idx.updated || now }, 200, { "cache-control": "public, max-age=30, s-maxage=120" });
-  ctx.waitUntil(cache.put(ck, res.clone()));
+  const fresh = !idx.updated || now - idx.updated < 6 * 3600e3; // never cache a stale index (stale feed bug 2026-11-20)
+  const res = J({ today, nv, team, week, latest, writers, count: items.length, updated: idx.updated || now }, 200, { "cache-control": fresh ? "public, max-age=30, s-maxage=120" : "no-store" });
+  if (fresh) ctx.waitUntil(cache.put(ck, res.clone()));
   return res;
 }
 
@@ -1514,7 +1515,7 @@ async function anonApi(env, req, url) {
 // ---------- Storage: D1 first, KV as read fallback (added 2026-11-17; KV free tier allows only 1k writes/day) ----------
 // 2026-11-17 (indexd1): big string values (index etc.) now live in D1 too. Up to D1_ONE bytes -> one chunk row; bigger -> several chunk rows in table kvc.
 // Header row in kv has st=3 and v = {"h":sha256,"n":chunks,"b":bytes,"at":ms}. Only binary (non-string) values still go to KV (st=2).
-let D1_READY = null; const D1_BIG = new Map(); const D1_CACHE = new Map(); const D1_CACHE_MS = 45000;
+let D1_READY = null; const D1_BIG = new Map(); const D1_CACHE = new Map(); const D1_CACHE_MS = 45000; const D1_LAST = new Map();
 function d1Init(db) { if (!D1_READY) D1_READY = db.batch([db.prepare("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT, m TEXT, exp INTEGER, st INTEGER NOT NULL DEFAULT 0)"), db.prepare("CREATE TABLE IF NOT EXISTS kvc (k TEXT NOT NULL, i INTEGER NOT NULL, v TEXT, PRIMARY KEY (k, i))")]).catch(e => { D1_READY = null; throw e; }); return D1_READY; }
 const D1_MAX = 100000; // string values above this are stored as chunked big values (st=3)
 const D1_ONE = 1900000, D1_CHUNK = 600000; // bytes that fit in one row; chars per chunk otherwise (<= 1.8MB even for 3-byte chars)
@@ -1545,9 +1546,10 @@ function hybridKV(kv, db) {
   async function get(k, opt) {
     const type = typeof opt === "string" ? opt : (opt && opt.type) || "text";
     if (type === "arrayBuffer" || type === "stream") return kv.get(k, opt);
-    let r; try { r = await load(k); } catch (e) { return kv.get(k, opt); }
+    let r; try { r = await load(k); } catch (e) { try { await new Promise(z => setTimeout(z, 150)); D1_CACHE.delete(k); r = await load(k); } catch (e2) { const lg = D1_LAST.get(k); if (lg) return d1Parse(lg, type); return kv.get(k, opt); } } // retry D1 once; prefer the last good D1 value over the frozen KV copy (stale feed bug 2026-11-20)
     if (r === undefined || r === "kv") return kv.get(k, opt);
     if (r === null) return null;
+    if (r.v && r.v.length > 50000) D1_LAST.set(k, r.v);
     return d1Parse(r.v, type);
   }
   async function getWithMetadata(k, opt) {
