@@ -132,7 +132,7 @@ function lcBody(x, text) {
 }
 
 // ---------- Pulse (2026-11-21): the temperature of Farcaster + fastest-rising casts, from casts the indexer already reads (no extra subrequests) ----------
-const PULSE_WIN = 6 * 3600000;
+const PULSE_WIN = 24 * 3600000; // 2026-11-21: 6 h was too thin at quiet hours; age decay still puts fresh casts first
 const pScore = (c, now) => (c.l + 2 * c.rc + 3 * c.rp) / Math.pow(Math.max(0, now - c.ts) / 3600000 + 1, 1.3);
 async function pulseSave(env, list, now) {
   try {
@@ -144,8 +144,8 @@ async function pulseSave(env, list, now) {
       const im = ((c.embeds && c.embeds.images) || [])[0];
       m.set(c.hash, { h: c.hash, ts: c.timestamp, fid: a.fid, u: a.username, n: a.displayName || a.username, p: (a.pfp && a.pfp.url) || null, t: String(c.text || "").slice(0, 320), im: im && im.url ? im.url : null, ch: (c.channel && c.channel.key) || null, l: (c.reactions && c.reactions.count) || 0, rc: (c.recasts && c.recasts.count) || 0, rp: (c.replies && c.replies.count) || 0 });
     }
-    const arr = [...m.values()].sort((x, y) => pScore(y, now) - pScore(x, now)).slice(0, 160);
-    const top = arr.filter(c => now - c.ts < 3 * 3600000).slice(0, 20);
+    const arr = [...m.values()].sort((x, y) => pScore(y, now) - pScore(x, now)).slice(0, 300);
+    const top = arr.filter(c => now - c.ts < 8 * 3600000).slice(0, 20);
     const v = top.length ? top.reduce((s, c) => s + pScore(c, now), 0) / top.length : 0;
     const hist = (old.hist || []).filter(x => now - x.at < 7 * 86400000);
     if (top.length >= 5) hist.push({ at: now, v: Math.round(v * 100) / 100 });
@@ -160,7 +160,7 @@ async function pulseApi(env, url) {
   pool.sort((x, y) => pScore(y, now) - pScore(x, now));
   const by = new Set(), casts = [];
   for (const c of pool) { if (by.has(c.fid)) continue; by.add(c.fid); casts.push({ ...c, url: "https://farcaster.xyz/" + c.u + "/" + c.h.slice(0, 10) }); if (casts.length >= 5) break; }
-  const top = pool.filter(c => now - c.ts < 3 * 3600000).slice(0, 20);
+  const top = pool.filter(c => now - c.ts < 8 * 3600000).slice(0, 20);
   const v = top.length ? top.reduce((s, c) => s + pScore(c, now), 0) / top.length : 0;
   const hv = (P.hist || []).map(x => x.v).sort((a, b) => a - b), base = hv.length >= 6 ? hv[Math.floor(hv.length / 2)] : v;
   const ratio = base > 0 ? v / base : 1;
@@ -178,7 +178,7 @@ async function discover(env, dry, seed) {
   const sr = { n: 0, cap: CRON_CAP };
   const now = Date.now();
   const found = [], stubs = {}, extra = [], extraSeen = new Set();
-  const pOn = !dry && now - (idx.pa || 0) > 14 * 60000, pList = [], pSeen = new Set();
+  const pOn = !dry && now - (idx.pa || 0) > 9 * 60000, pList = [], pSeen = new Set();
   const writers = new Set(idx.writers || []);
   for (const x of Object.values(idx.items)) if (x.a && x.a.fid) writers.add(x.a.fid);
   const pool = (idx.authors || []).filter(f => !writers.has(f));
