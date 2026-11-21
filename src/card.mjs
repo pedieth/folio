@@ -62,22 +62,22 @@ ${pfp ? `<image href="${pfp}" x="100" y="670" width="64" height="64" preserveAsp
 
 const TIERS = { red: ["#A8341C", "#F4EFE6"], silver: ["#C9D3DD", "#1B1A17"], gold: ["#D9A82B", "#1B1A17"], black: ["#F4EFE6", "#0E0D0B"] };
 function coverInner(o) {
-  const [c, ink] = TIERS[o.tier] || TIERS.red;
+  const [c0, ink] = TIERS[o.tier] || TIERS.red; const c = o.tier==="black" ? "url(#mg)" : c0; const W = o.tier==="black" ? "#F6EFE1" : "#FFFFFF";
   const nm = clean(o.name).replace(/[\s\-\u2013\u2014|·.,:;]+$/, "") || o.user;
   const per = clean(o.persona) || "The Reader";
   const pL = wrap(per.toUpperCase(), 14, 2);
   const lines = (o.lines || []).map(clean).filter(Boolean).slice(0, 4);
-  let yy = 380; const cl = lines.map(l => { const w = wrap(l, 24, 2); const y0 = yy; yy += w.length * 44 + 40; return `<rect x="56" y="${y0 - 32}" width="8" height="${w.length * 44 - 4}" fill="${c}"/>` + w.map((t, j) => `<text x="80" y="${y0 + j * 44}" font-family="Noto Sans" font-weight="700" font-size="36" fill="#FFFFFF" filter="url(#sh)">${X(t)}</text>`).join(""); }).join("");
+  let yy = 380; const cl = lines.map(l => { const w = wrap(l, 24, 2); const y0 = yy; yy += w.length * 44 + 40; return `<rect x="56" y="${y0 - 32}" width="8" height="${w.length * 44 - 4}" fill="${c}"/>` + w.map((t, j) => `<text x="80" y="${y0 + j * 44}" font-family="Noto Sans" font-weight="700" font-size="36" fill="${W}" filter="url(#sh)">${X(t)}</text>`).join(""); }).join("");
   const py = 1010 - (pL.length - 1) * 92;
   return `<defs><clipPath id="cv"><rect x="0" y="0" width="900" height="1200"/></clipPath>
 <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".55"/><stop offset=".28" stop-color="#000" stop-opacity=".05"/><stop offset=".55" stop-color="#000" stop-opacity=".1"/><stop offset="1" stop-color="#000" stop-opacity=".88"/></linearGradient>
-<filter id="sh" x="-5%" y="-20%" width="110%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity=".6"/></filter></defs>
+${o.tier==="black"?'<linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FBF1D0"/><stop offset=".45" stop-color="#E2BE6A"/><stop offset=".75" stop-color="#B8893A"/><stop offset="1" stop-color="#E9CF8A"/></linearGradient>':''}<filter id="sh" x="-5%" y="-20%" width="110%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity=".6"/></filter></defs>
 <g clip-path="url(#cv)">
 <rect width="900" height="1200" fill="#2A2722"/>
 ${o.pfp ? `<image href="${o.pfp}" x="0" y="0" width="900" height="1200" preserveAspectRatio="xMidYMid slice"/>` : `<text x="450" y="700" text-anchor="middle" font-family="Noto Serif" font-weight="700" font-size="300" fill="#4A453D">${X((nm[0] || "F").toUpperCase())}</text>`}
 <rect width="900" height="1200" fill="url(#g1)"/>
-<text x="450" y="268" text-anchor="middle" font-family="Noto Serif" font-weight="700" font-size="200" letter-spacing="6" fill="${c}" filter="url(#sh)">FOLIO</text>
-<text x="56" y="58" font-family="Noto Sans" font-weight="700" font-size="22" letter-spacing="3" fill="#FFFFFF" filter="url(#sh)">${X(o.edition.toUpperCase())}</text>
+<text x="450" y="268" text-anchor="middle" font-family="Noto Serif" font-weight="700" font-size="200" letter-spacing="6" fill="${o.tier==="black"?"#F6EFE1":c}" filter="url(#sh)">FOLIO</text>
+<text x="56" y="58" font-family="Noto Sans" font-weight="700" font-size="22" letter-spacing="3" fill="${o.tier==="black"?c:"#FFFFFF"}" filter="url(#sh)">${X(o.edition.toUpperCase())}</text>
 <text x="844" y="60" text-anchor="end" font-family="Noto Sans" font-weight="700" font-size="22" letter-spacing="3" fill="#FFFFFF" filter="url(#sh)">FID ${X(o.fid)}</text>
 <text x="450" y="312" text-anchor="middle" font-family="Noto Sans" font-weight="700" font-size="22" letter-spacing="5" fill="#FFFFFF" filter="url(#sh)">THE READER ISSUE \u00B7 ${X(o.date.toUpperCase())}</text>
 ${cl}

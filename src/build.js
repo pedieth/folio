@@ -1087,7 +1087,7 @@ async function coverData(env, fid) {
 async function coverCard(env, fid, f, ctx) {
   if (!(fid > 0 && fid < 1e9)) return new Response("bad", { status: 400 });
   const d = await coverData(env, fid);
-  const key = "cv2:" + fid + ":" + d.v + ":" + f + ":" + (d.pfpUrl || "").slice(-24);
+  const key = "cv3:" + fid + ":" + d.v + ":" + f + ":" + (d.pfpUrl || "").slice(-24);
   const H = { "content-type": "image/png", "cache-control": "public, max-age=3600" };
   const hit = await env.KV.get(key, "arrayBuffer");
   if (hit) return new Response(hit, { headers: H });
