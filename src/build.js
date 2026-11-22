@@ -869,7 +869,7 @@ async function writerPing(env, origin) {
       await env.KV.put(k, "1", { expirationTtl: 60 * 86400 });
     }
   } catch (e) {}
-  const top = todayList(all, nowT).slice(0, 3);
+  const top = todayList(all, nowT).slice(0, 5); // Pedi 2026-11-22: writers in today's top 5 get the rank notification
   for (let i = 0; i < top.length; i++) {
     const x = top[i], d = x.a && subs[x.a.fid];
     if (!d) continue;
