@@ -353,6 +353,7 @@ function score(x, now) {
 }
 
 const MIN_WORDS = 80; // short pieces are dropped everywhere
+const GONE = new Set(["0x51b157a4b0d85a04f36a7b17c944734b7440e10b"]); // casts not available on Farcaster, kept out of every list (Pedi 2026-11-22)
 const RANKED = "Ranked daily by reads, ratings, highlights, likes, recasts, replies and quotes.";
 // no engagement / low-trust accounts only show in Latest
 const SPAM = /\b(airdrop|giveaway|free ?mint|whitelist|presale|claim (now|your)|100x|pump|guaranteed (profit|returns))\b/i;
@@ -371,7 +372,7 @@ function todayList(items, now) { return demoteFC(top1(items.filter(x => x._g && 
 
 function publicItems(idx) {
   const now = Date.now();
-  const out = Object.values(idx.items).map(x => { if (x.k === "lc") { const t = tClean(x.title); if (t !== x.title) x = { ...x, title: t.length >= 8 ? t : (x.prev || "").slice(0, 90).replace(/\s+\S*$/, "") + "\u2026" }; } return x; }).filter(x => x.meta === 1 && (x.words || 0) >= MIN_WORDS && (x.title || "").trim() && x.a && x.a.fid && !spammy(x)).map(x => {
+  const out = Object.values(idx.items).map(x => { if (x.k === "lc") { const t = tClean(x.title); if (t !== x.title) x = { ...x, title: t.length >= 8 ? t : (x.prev || "").slice(0, 90).replace(/\s+\S*$/, "") + "\u2026" }; } return x; }).filter(x => !GONE.has(x.h) && x.meta === 1 && (x.words || 0) >= MIN_WORDS && (x.title || "").trim() && x.a && x.a.fid && !spammy(x)).map(x => {
     const s = score(x, now);
     return { h: x.h, ts: x.ts, title: noLone(x.title), cover: x.cover, prev: noLone(x.prev), min: x.min, topic: x.topic, a: x.a, l: x.l, r: x.r, rp: x.rp, q: x.q || 0, v: x.v || 0, rs: x.rs || 0, rn: x.rn || 0, ...(x.k === "pg" ? { pg: 1 } : {}), ...(x.k === "lc" ? { lc: 1 } : {}), hc: x.hc || 0, rd: x.rd || 0, hot: s.hot, top: s.top };
   });
