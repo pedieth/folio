@@ -2363,7 +2363,7 @@ async function slMeta(env, origin, id) {
 // then stored (GMF_TZ seed below, or POST /admin/gmf?k=ADMIN_KEY&ep=NNN). An episode shows only when it has an approved teaser
 // AND a good parse (title, date, at least one watch link). Parse failures keep the last good data. Hide switch: /admin/gmf?k=..&hide=NNN (unhide=NNN).
 const GMF_BASE = "https://www.gmfarcaster.com";
-const GMF_SHOW = 2; // episodes shown in the tab
+const GMF_MIN = 400; // every episode from ep400 on with highlights is shown
 const GMF_TZ = {
   401: { short: "We Talkin' Farticles?", meta: "NounishProf and Adrienne · Nov 17, 2026 · 75 min", yt: "https://www.youtube.com/watch?v=i3TmM-6D3Nc", hl: "Highlights · 65 of 75 min", bullets: [
     ["10:17", "The Farcaster fork finally happened after eight months of talk. Where do you follow it?", "11:53"],
@@ -2430,7 +2430,7 @@ async function gmfList(env) {
   const hide = (await gmfGet(env, "hide")) || [];
   const tzs = (await gmfGet(env, "tz")) || {};
   const all = { ...GMF_TZ, ...tzs };
-  const nums = Object.keys(all).map(Number).filter(n => !hide.includes(n)).sort((a, b) => b - a).slice(0, GMF_SHOW);
+  const nums = Object.keys(all).map(Number).filter(n => n >= GMF_MIN && !hide.includes(n)).sort((a, b) => b - a);
   const out = [];
   for (const n of nums) {
     const d = (await gmfGet(env, "ep:" + n)) || GMF_SEED[n]; const tz = all[n];
