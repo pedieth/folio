@@ -14,12 +14,15 @@
 //  3. Replies/hugs reach the writer through a random mailbox key kept on their phone.
 //     The server stores only sha256(key); "my letters" is fetched WITHOUT sign-in.
 //  4. Nothing on these routes is logged (no console.log of fid, ip or body).
+//  5. Not even Folio's developer can see who wrote a letter: the link simply is not stored.
+//  6. Sharing is off by default. Only letters whose writer ticked "can be shared" are readable by link (/one).
 
 const DAY = () => new Date().toISOString().slice(0, 10);
 const NOW = () => Math.floor(Date.now() / 1000);
 const BATCH = 3600;            // letters go live at the next full hour, in random order
 const MAX_LEN = 2000, MIN_LEN = 40;
-const PER_NIGHT = 3;           // "up to 3": fewer when the pool is small
+const PER_NIGHT = 3;
+const FREE_PER_DAY = 1;        // readers who haven't written today still get one letter           // "up to 3": fewer when the pool is small
 const MAX_AGE = 30 * 86400;    // older letters can still be delivered while it's quiet
 const HIDE_AT = 3;             // reports before a letter is hidden
 const TAGS = ["pain", "joy", "win", "confession", "other"];
@@ -48,7 +51,7 @@ const CRISIS = [/kill myself/i, /suicid/i, /end my life/i, /want to die/i, /self
 
 // Tables are created on first use (same as schema.sql in this folder's history).
 const SCHEMA = [
- "CREATE TABLE IF NOT EXISTS letters ( id TEXT PRIMARY KEY, body TEXT NOT NULL, tag TEXT NOT NULL, mbox_hash TEXT NOT NULL, publish_at INTEGER NOT NULL, views INTEGER NOT NULL DEFAULT 0, hugs INTEGER NOT NULL DEFAULT 0, reports INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0 )",
+ "CREATE TABLE IF NOT EXISTS letters ( id TEXT PRIMARY KEY, body TEXT NOT NULL, tag TEXT NOT NULL, mbox_hash TEXT NOT NULL, publish_at INTEGER NOT NULL, views INTEGER NOT NULL DEFAULT 0, hugs INTEGER NOT NULL DEFAULT 0, reports INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, share INTEGER NOT NULL DEFAULT 0 )",
  "CREATE INDEX IF NOT EXISTS letters_pick ON letters (hidden, publish_at, views)",
  "CREATE INDEX IF NOT EXISTS letters_mbox ON letters (mbox_hash)",
  "CREATE TABLE IF NOT EXISTS daily_quota ( fid INTEGER NOT NULL, day TEXT NOT NULL, PRIMARY KEY (fid, day) )",
@@ -56,7 +59,7 @@ const SCHEMA = [
  "CREATE INDEX IF NOT EXISTS deliveries_day ON deliveries (fid, day)"
 ];
 let ready = null;
-function init(db) { if (!ready) ready = db.batch(SCHEMA.map(q => db.prepare(q))).catch(e => { ready = null; throw e; }); return ready; }
+function init(db) { if (!ready) ready = db.batch(SCHEMA.map(q => db.prepare(q))).then(() => db.prepare("ALTER TABLE letters ADD COLUMN share INTEGER NOT NULL DEFAULT 0").run().catch(() => {})).catch(e => { ready = null; throw e; }); return ready; }
 
 export async function handleLetters(req, env, verifyFid) {
   const url = new URL(req.url);
@@ -70,7 +73,7 @@ export async function handleLetters(req, env, verifyFid) {
     // ---------- write (sign-in needed, only to enforce 1/day) ----------
     if (route === "write" && req.method === "POST") {
       const fid = await verifyFid(req); if (!fid) return json({ error: "auth" }, 401);
-      const { body = "", tag = "other", mbox_hash = "" } = await req.json();
+      const { body = "", tag = "other", mbox_hash = "", share = false } = await req.json();
       const text = String(body).trim();
       if (text.length < MIN_LEN || text.length > MAX_LEN) return json({ error: "length", min: MIN_LEN, max: MAX_LEN }, 400);
       if (!/^[a-f0-9]{64}$/.test(mbox_hash)) return json({ error: "mbox" }, 400);
@@ -85,33 +88,33 @@ export async function handleLetters(req, env, verifyFid) {
       const publish_at = (Math.floor(NOW() / BATCH) + 1) * BATCH;
       await db.batch([
         db.prepare("INSERT INTO daily_quota (fid, day) VALUES (?, ?)").bind(fid, day),
-        db.prepare("INSERT INTO letters (id, body, tag, mbox_hash, publish_at) VALUES (?, ?, ?, ?, ?)")
-          .bind(id, text, TAGS.includes(tag) ? tag : "other", mbox_hash, publish_at),
+        db.prepare("INSERT INTO letters (id, body, tag, mbox_hash, publish_at, share) VALUES (?, ?, ?, ?, ?, ?)")
+          .bind(id, text, TAGS.includes(tag) ? tag : "other", mbox_hash, publish_at, share === true ? 1 : 0),
       ]);
       return json({ ok: true, id, publish_at });
     }
 
-    // ---------- inbox: up to 3 letters, only after you wrote today ----------
+    // ---------- inbox: 1 free letter a day; 3 after you wrote today ----------
     if (route === "inbox" && req.method === "POST") {
       const fid = await verifyFid(req); if (!fid) return json({ error: "auth" }, 401);
       const day = DAY();
       const wrote = await db.prepare("SELECT 1 FROM daily_quota WHERE fid=? AND day=?").bind(fid, day).first();
-      if (!wrote) return json({ locked: true, letters: [] });
+      const per = wrote ? PER_NIGHT : FREE_PER_DAY;
 
       // exclude = ids of your own letters, held on your phone. Used for this query only, never stored.
       const { exclude = [] } = await req.json().catch(() => ({}));
       const ex = (Array.isArray(exclude) ? exclude : []).filter(x => /^[0-9a-f-]{36}$/.test(x)).slice(0, 60);
 
       let got = (await db.prepare(
-        "SELECT l.id, l.body, l.tag, l.hugs, d.hugged FROM deliveries d JOIN letters l ON l.id=d.letter_id WHERE d.fid=? AND d.day=? AND l.hidden=0"
+        "SELECT l.id, l.body, l.tag, l.hugs, l.share, d.hugged FROM deliveries d JOIN letters l ON l.id=d.letter_id WHERE d.fid=? AND d.day=? AND l.hidden=0"
       ).bind(fid, day).all()).results;
 
-      if (got.length < PER_NIGHT) {
-        const need = PER_NIGHT - got.length;
+      if (got.length < per) {
+        const need = per - got.length;
         const skip = [...ex, ...got.map(x => x.id)];
         const ph = skip.map(() => "?").join(",") || "''";
         const fresh = (await db.prepare(
-          `SELECT id, body, tag, hugs FROM letters
+          `SELECT id, body, tag, hugs, share FROM letters
            WHERE hidden=0 AND publish_at<=? AND publish_at>=? AND id NOT IN (${ph})
              AND id NOT IN (SELECT letter_id FROM deliveries WHERE fid=?)
            ORDER BY views ASC, RANDOM() LIMIT ?`
@@ -129,7 +132,7 @@ export async function handleLetters(req, env, verifyFid) {
         const old = new Date(Date.now() - 7 * 86400e3).toISOString().slice(0, 10);
         await db.prepare("DELETE FROM deliveries WHERE day<?").bind(old).run();
       }
-      return json({ locked: false, letters: got, max: PER_NIGHT });
+      return json({ locked: false, free: !wrote, letters: got, max: per });
     }
 
     // ---------- hug / report (only letters delivered to you) ----------
@@ -160,6 +163,14 @@ export async function handleLetters(req, env, verifyFid) {
         `SELECT id, body, tag, hugs, views, publish_at, hidden FROM letters WHERE mbox_hash IN (${hashes.map(() => "?").join(",")}) ORDER BY publish_at DESC`
       ).bind(...hashes).all()).results;
       return json({ letters: rows });
+    }
+
+    // ---------- one shared letter (only if its writer allowed sharing) ----------
+    if (route === "one" && req.method === "GET") {
+      const id = url.searchParams.get("id") || "";
+      if (!/^[0-9a-f-]{36}$/.test(id)) return json({ error: "not_found" }, 404);
+      const l = await db.prepare("SELECT id, body, tag, hugs FROM letters WHERE id=? AND share=1 AND hidden=0 AND publish_at<=?").bind(id, NOW()).first();
+      return l ? json({ letter: l }) : json({ error: "not_found" }, 404);
     }
 
     // ---------- public stats (so writers know it's quiet) ----------

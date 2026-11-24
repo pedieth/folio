@@ -85,5 +85,5 @@ r=subprocess.run(['node','e2e/letters_unit.mjs'],capture_output=True,text=True,c
 ok('if (p.startsWith("/api/letters/")) return await handleLetters(req, env, r => qaFid(r, url));' in s and 'import { handleLetters } from "./letters.mjs";' in s,'letters: route + import')
 ok('id="ltc"' in html and 'id="ltrow"' not in html.split('const ltPut')[0][-50:] and 'r.id="ltrow"' in html and 'data-t="letters"' not in html,'letters: Today card next to Who wrote it?, no extra nav tab')
 lm=open('/workspace/work/folio/src/letters.mjs').read()
-ok(not any('console.' in l for l in lm.splitlines() if not l.strip().startswith('//')) and 'INSERT INTO letters (id, body, tag, mbox_hash, publish_at)' in lm,'letters: no logging, letter row has no fid')
+ok(not any('console.' in l for l in lm.splitlines() if not l.strip().startswith('//')) and 'INSERT INTO letters (id, body, tag, mbox_hash, publish_at, share)' in lm,'letters: no logging, letter row has no fid')
 sys.exit(1 if bad else 0)
