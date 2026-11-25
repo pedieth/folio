@@ -43,4 +43,10 @@ await env.DB.prepare("UPDATE letters SET publish_at=?").bind(Math.floor(Date.now
 const one = await call("one?id=" + w3.j.id, 0, null, "GET");
 ok(one.s === 200 && one.j.letter.body.endsWith("three") && !("mbox_hash" in one.j.letter) && !("share" in one.j.letter), "shared letter readable by link, without mailbox key");
 ok((await call("inbox", 22, {})).j.max === 3, "writers get 3");
+{ const q = (await env.DB.prepare("SELECT * FROM quota_h").all()).results;
+  ok(q.length >= 2 && q.every(r => !("fid" in r) && /^[a-f0-9]{64}$/.test(r.h) && r.h !== String(11) && r.h !== sha("11")), "quota keeps only an HMAC, never the fid");
+  await env.DB.prepare("UPDATE quota_salt SET day='2000-01-01'").run(); await env.DB.prepare("UPDATE quota_h SET day='2000-01-01'").run();
+  await call("inbox", 99, {});
+  const left = (await env.DB.prepare("SELECT COUNT(*) AS n FROM quota_salt WHERE day='2000-01-01'").first()).n + (await env.DB.prepare("SELECT COUNT(*) AS n FROM quota_h WHERE day='2000-01-01'").first()).n;
+  ok(left === 0, "yesterday's salt and quota rows are deleted"); }
 process.exit(bad ? 1 : 0);

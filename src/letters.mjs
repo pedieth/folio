@@ -10,7 +10,8 @@
 //
 // PRIVACY CONTRACT (this file is public so anyone can check it):
 //  1. A letter row never contains a FID, a FID hash, a username or an exact time.
-//  2. The writer's FID is only written to daily_quota (fid + date), with no link to the letter.
+//  2. The writer's FID is never stored. The 1-a-day limit keeps only HMAC(fid, today's random salt);
+//     the salt is deleted the next day, after which nobody can tell whose quota row it was.
 //  3. Replies/hugs reach the writer through a random mailbox key kept on their phone.
 //     The server stores only sha256(key); "my letters" is fetched WITHOUT sign-in.
 //  4. Nothing on these routes is logged (no console.log of fid, ip or body).
@@ -54,10 +55,25 @@ const SCHEMA = [
  "CREATE TABLE IF NOT EXISTS letters ( id TEXT PRIMARY KEY, body TEXT NOT NULL, tag TEXT NOT NULL, mbox_hash TEXT NOT NULL, publish_at INTEGER NOT NULL, views INTEGER NOT NULL DEFAULT 0, hugs INTEGER NOT NULL DEFAULT 0, reports INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, share INTEGER NOT NULL DEFAULT 0 )",
  "CREATE INDEX IF NOT EXISTS letters_pick ON letters (hidden, publish_at, views)",
  "CREATE INDEX IF NOT EXISTS letters_mbox ON letters (mbox_hash)",
- "CREATE TABLE IF NOT EXISTS daily_quota ( fid INTEGER NOT NULL, day TEXT NOT NULL, PRIMARY KEY (fid, day) )",
+ "DROP TABLE IF EXISTS daily_quota",
+ "CREATE TABLE IF NOT EXISTS quota_h ( h TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY (h, day) )",
+ "CREATE TABLE IF NOT EXISTS quota_salt ( day TEXT PRIMARY KEY, salt TEXT NOT NULL )",
  "CREATE TABLE IF NOT EXISTS deliveries ( fid INTEGER NOT NULL, day TEXT NOT NULL, letter_id TEXT NOT NULL, hugged INTEGER NOT NULL DEFAULT 0, reported INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (fid, letter_id) )",
  "CREATE INDEX IF NOT EXISTS deliveries_day ON deliveries (fid, day)"
 ];
+// Today's random salt lives in D1 for one day only; older salts and quota rows are deleted.
+async function quotaHash(db, fid, day) {
+  const fresh = [...crypto.getRandomValues(new Uint8Array(32))].map(b => b.toString(16).padStart(2, "0")).join("");
+  await db.batch([
+    db.prepare("DELETE FROM quota_salt WHERE day<?").bind(day),
+    db.prepare("DELETE FROM quota_h WHERE day<?").bind(day),
+    db.prepare("INSERT OR IGNORE INTO quota_salt (day, salt) VALUES (?, ?)").bind(day, fresh),
+  ]);
+  const row = await db.prepare("SELECT salt FROM quota_salt WHERE day=?").bind(day).first();
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(row.salt), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(String(fid)));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
 let ready = null;
 function init(db) { if (!ready) ready = db.batch(SCHEMA.map(q => db.prepare(q))).then(() => db.prepare("ALTER TABLE letters ADD COLUMN share INTEGER NOT NULL DEFAULT 0").run().catch(() => {})).catch(e => { ready = null; throw e; }); return ready; }
 
@@ -81,13 +97,14 @@ export async function handleLetters(req, env, verifyFid) {
       if (PII.some(r => r.test(text))) return json({ error: "pii" }, 422);
 
       const day = DAY();
-      const used = await db.prepare("SELECT 1 FROM daily_quota WHERE fid=? AND day=?").bind(fid, day).first();
+      const qh = await quotaHash(db, fid, day);
+      const used = await db.prepare("SELECT 1 FROM quota_h WHERE h=? AND day=?").bind(qh, day).first();
       if (used) return json({ error: "quota" }, 429);
 
       const id = crypto.randomUUID();
       const publish_at = (Math.floor(NOW() / BATCH) + 1) * BATCH;
       await db.batch([
-        db.prepare("INSERT INTO daily_quota (fid, day) VALUES (?, ?)").bind(fid, day),
+        db.prepare("INSERT INTO quota_h (h, day) VALUES (?, ?)").bind(qh, day),
         db.prepare("INSERT INTO letters (id, body, tag, mbox_hash, publish_at, share) VALUES (?, ?, ?, ?, ?, ?)")
           .bind(id, text, TAGS.includes(tag) ? tag : "other", mbox_hash, publish_at, share === true ? 1 : 0),
       ]);
@@ -98,7 +115,7 @@ export async function handleLetters(req, env, verifyFid) {
     if (route === "inbox" && req.method === "POST") {
       const fid = await verifyFid(req); if (!fid) return json({ error: "auth" }, 401);
       const day = DAY();
-      const wrote = await db.prepare("SELECT 1 FROM daily_quota WHERE fid=? AND day=?").bind(fid, day).first();
+      const wrote = await db.prepare("SELECT 1 FROM quota_h WHERE h=? AND day=?").bind(await quotaHash(db, fid, day), day).first();
       const per = wrote ? PER_NIGHT : FREE_PER_DAY;
 
       // exclude = ids of your own letters, held on your phone. Used for this query only, never stored.

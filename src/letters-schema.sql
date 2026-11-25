@@ -16,11 +16,9 @@ CREATE INDEX IF NOT EXISTS letters_pick ON letters (hidden, publish_at, views);
 CREATE INDEX IF NOT EXISTS letters_mbox ON letters (mbox_hash);
 
 -- One letter per FID per day. Only the date, never the time, never the letter id.
-CREATE TABLE IF NOT EXISTS daily_quota (
-  fid  INTEGER NOT NULL,
-  day  TEXT NOT NULL,                     -- YYYY-MM-DD (UTC)
-  PRIMARY KEY (fid, day)
-);
+-- 1-a-day limit: HMAC(fid, today's salt) only; salt and rows are deleted the next day
+CREATE TABLE IF NOT EXISTS quota_h ( h TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY (h, day) );
+CREATE TABLE IF NOT EXISTS quota_salt ( day TEXT PRIMARY KEY, salt TEXT NOT NULL );
 
 -- Which letters a READER received (never the writer). Wiped after 7 days.
 CREATE TABLE IF NOT EXISTS deliveries (
