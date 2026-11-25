@@ -60,7 +60,8 @@ ok('Date.now()-(window._lo||0)<4000' in html and 'window._lo=Date.now();history.
 ok('function top1(arr, n)' in s and 'demoteFC(top1(' in s and 'const wHead = top1(wSorted, 12)' in s,'Today/Week: one piece per writer in top places, newest piece replaces older')
 ok('const TEAM_FIDS = [1, 16447]' in s and s.count('!isTeam(x)')>=4 and 'From Farcaster &amp; Folio' in html and 'data.team.slice(0,2)' in html,'team (@pk, @farcaster) not ranked; small Not ranked section at end of Today')
 ok('family=Inter:wght@400;500;600;700&family=Spectral' in html and '--title:\\"Inter\\"' in s and '.row h3{font-family:var(--title)' in html and 'article.r h1{font-family:var(--title)' in html and '--serif:\\"Spectral\\"' in s,'fonts: list titles Inter, reading text Spectral')
-ok(html.count('?"":" nocv"')==3 and '.row.nocv{grid-template-columns:28px 1fr}' in html and '<span></span>' not in html and ':nc(x)}' not in html,'rows: no-cover pieces use full width, no empty space')
+ok(html.count('?"":" nocv"')==3 and '.row.nocv{grid-template-columns:28px minmax(0,1fr)}' in html and '<span></span>' not in html and ':nc(x)}' not in html,'rows: no-cover pieces use full width, no empty space')
+ok('.row{display:grid;grid-template-columns:28px minmax(0,1fr) 84px;' in html and 'overflow-wrap:anywhere}\nhtml,body{overflow-x:clip}' in html,'rows: long unbroken titles/URLs never widen the page (no sideways shake)')
 # Zero Hour (sealed texts) 2026-11-19
 r=subprocess.run(['node','/workspace/work/folio/e2e/zh_unit.mjs'],capture_output=True,text=True)
 ok(r.returncode==0,'zero hour: server unit test (no body before open, withdraw blocked after half, open date 1 day to 1 year, auth, cap) '+(r.stdout.strip().splitlines() or [''])[-1]+' '+' | '.join(l for l in r.stdout.splitlines() if l.startswith('FAIL'))[:300])
