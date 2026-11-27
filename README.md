@@ -10,6 +10,7 @@ a reading layer for long-form writing on farcaster. it finds the articles people
 - reader with translation, listen, reading speed and highlights
 - writers tab, following, saved articles and stories
 - daily "who wrote it?" game with a shareable card
+- sticker packs you can drop into a cast
 - report button and takedown flow
 
 ## stack
@@ -20,6 +21,8 @@ cloudflare workers · kv · d1 · workers ai · farcaster mini app sdk
 
 - `src/build.js` the worker: api routes and the mini app page
 - `src/card.mjs` share card rendering
+- `src/stickers.mjs` sticker images and the sticker routes
+- `src/series.mjs` series pages
 - `src/resvg.mjs` svg to png (wasm not included in the repo)
 - `check.py` regression checks, run before every deploy
 
